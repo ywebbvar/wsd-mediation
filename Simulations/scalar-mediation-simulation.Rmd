@@ -1,0 +1,218 @@
+---
+title: "Simulation Within-Subject Mediation"
+author: "Yenny Webb-Vargas"
+date: "Wednesday, March 18, 2015"
+output: html_document
+---
+
+- I simulate scalar mediation with confounding across people
+- I try two bootstraps:
+* perform analysis within person, then boostrap causal effect
+* do bootstrap for each person, then sample from the bootstrap distribution
+
+Sampling from bootstrap distribution
+```{r}
+N = 20 
+J = 48
+
+# Parameters
+beta = c(2,3,1.5)
+sd_x = 1
+
+# Parameters within a person
+sd_x_wd = 0.5
+
+set.seed(493240)
+beta_ws = t(sapply(1:N, function(i) rnorm(n=3, sd=sd_x_wd)))
+sd_y_wd = 3
+
+
+# Simulating data
+x = matrix(rnorm(N*J, sd=sd_x), ncol=N)
+z = sapply(1:N, function(n) sample(c(rep(1,J/2), rep(0,J/2)), replace=FALSE))
+y = sapply(1:N, function(n) cbind(1, x[,n],z[,n])%*%(beta_ws[n,]+beta) + rnorm(J, sd=sd_y_wd))
+plot(x,y)
+```
+
+```{r}
+hat_beta = sapply(1:N, function(n) lm(y[,n]~x[,n]+z[,n])$coeff)
+ATE = mean(hat_beta[grep("z",rownames(hat_beta)),])
+hist(hat_beta[3,])
+```
+
+## Bootstrap people
+```{r}
+B=1000
+myboot_sample = sapply(1:B, function(b) sample(1:N, replace=TRUE))
+boot_ATE = sapply(1:B, function(b) c(mean(hat_beta[3,myboot_sample[,b]]),sd(hat_beta[3,myboot_sample[,b]])^2))
+quantile(boot_ATE[1,], c(0.025, 0.975))
+c(mean(boot_ATE[1,]),sd(boot_ATE[1,]))
+hist(boot_ATE[1,])
+```
+
+## Combine using multiple imputation methods
+```{r}
+library(mitools)
+
+list_beta = list()
+for(n in 1:N){
+  list_beta[[n]] = lm(y[,n]~x[,n]+z[,n])
+}
+(MI_beta = MIcombine(list_beta))
+```
+
+# Simulation
+```{r}
+S = 1500
+boot_results = matrix(NA,ncol=4,nrow=S)
+```
+
+
+```{r, cache=TRUE}
+set.seed(810014)
+for(s in 1:S){
+  N = 20 
+  J = 48
+  
+  # Parameters
+  beta = c(2,3,1.5)
+  sd_x = 1
+  
+  # Parameters within a person
+  sd_x_wd = 0.5
+  
+  beta_ws = t(sapply(1:N, function(i) rnorm(n=3, sd=sd_x_wd)))
+  sd_y_wd = 3
+  
+  
+  # Simulating data
+  x = matrix(rnorm(N*J, sd=sd_x), ncol=N)
+  z = sapply(1:N, function(n) sample(c(rep(1,J/2), rep(0,J/2)), replace=FALSE))
+  y = sapply(1:N, function(n) cbind(1, x[,n],z[,n])%*%(beta_ws[n,]+beta) + rnorm(J, sd=sd_y_wd))
+  
+  # within-subject analysis
+  hat_beta = sapply(1:N, function(n) lm(y[,n]~x[,n]+z[,n])$coeff)
+  ATE = mean(hat_beta[grep("z",rownames(hat_beta)),])
+  
+  # Bootstrap Inference
+  B=1000
+  boot_sample = sapply(1:B, function(b) sample(1:N, replace=TRUE))
+  boot_ATE = sapply(1:B, function(b) mean(hat_beta[3,boot_sample[,b]]))
+  boot_results[s,] = c(quantile(boot_ATE, c(0.025, 0.975)), mean(boot_ATE),sd(boot_ATE))
+}
+```
+
+```{r}
+apply(boot_results[,3:4], 2,mean)
+mean(boot_results[,1] < beta[3] & boot_results[,2] > beta[3]) 
+boot_CI = boot_results[,3] + boot_results[,4]%*%t(qnorm(c(0.025, 0.975)))
+mean(boot_CI[,1] < beta[3] & boot_CI[,2] > beta[3]) 
+```
+
+# Simulation with samples from bootstrap samples
+
+```{r}
+set.seed(493240)
+
+N = 20 
+J = 48
+
+# Parameters
+beta = c(2,3,1.5)
+sd_x = 1
+
+# Parameters within a person
+sd_x_wd = 0.5
+
+beta_ws = t(sapply(1:N, function(i) rnorm(n=3, sd=sd_x_wd)))
+sd_y_wd = 3
+
+
+# Simulating data
+x = matrix(rnorm(N*J, sd=sd_x), ncol=N)
+z = sapply(1:N, function(n) sample(c(rep(1,J/2), rep(0,J/2)), replace=FALSE))
+y = sapply(1:N, function(n) cbind(1, x[,n],z[,n])%*%(beta_ws[n,]+beta) + rnorm(J, sd=sd_y_wd))
+```
+
+## boostrap within people
+
+```{r}
+library(boot)
+set.seed(4174)
+
+model = function(dta,index){
+  dta_b = dta[index,]
+  result = lm(y~x+z, data=dta_b)
+  return(result$coef)
+}
+```
+
+```{r}
+ws_boot = list()
+
+for(n in 1:N){
+  dta = data.frame(x = x[,n], y = y[,n], z = z[,n])
+  ws_boot[[n]] = boot(dta, statistic=model,R=B)
+} 
+
+B_n = 1500
+boot_sample = sapply(1:N,FUN = function(n) sample(x =ws_boot[[n]]$t[,3], size = B_n, replace=TRUE))
+boot_mean = apply(boot_sample, 1, mean)
+mean(boot_mean)
+quantile(boot_mean, c(0.025, 0.975))
+```
+
+## Simulation
+
+```{r}
+S = 1000
+boot_results_ws = matrix(NA,ncol=4,nrow=S)
+```
+
+
+```{r, cache=FALSE}
+set.seed(2935959)
+
+for(s in 1:S){
+  N = 20 
+  J = 48
+  
+  # Parameters
+  beta = c(2,3,1.5)
+  sd_x = 1
+  
+  # Parameters within a person
+  sd_x_wd = 0.5
+  
+  beta_ws = t(sapply(1:N, function(i) rnorm(n=3, sd=sd_x_wd)))
+  sd_y_wd = 3
+  
+  
+  # Simulating data
+  x = matrix(rnorm(N*J, sd=sd_x), ncol=N)
+  z = sapply(1:N, function(n) sample(c(rep(1,J/2), rep(0,J/2)), replace=FALSE))
+  y = sapply(1:N, function(n) cbind(1, x[,n],z[,n])%*%(beta_ws[n,]+beta) + rnorm(J, sd =sd_y_wd))
+  
+  # Analysis
+  ws_boot = list()
+  
+  for(n in 1:N){
+    dta = data.frame(x = x[,n], y = y[,n], z = z[,n])
+    ws_boot[[n]] = boot(dta, statistic=model,R=B)
+  } 
+  
+  B_n = 1500
+  boot_sample = sapply(1:N,FUN = function(n) sample(x =ws_boot[[n]]$t[,3], size = B_n, replace=TRUE))
+  boot_mean = apply(boot_sample, 1, mean)
+  boot_results_ws[s,] = c(quantile(boot_mean, c(0.025, 0.975)),mean(boot_mean), sd(boot_mean))
+}
+save(boot_results_ws, file='scalar-lm-simulation-boot_results.Rdata')
+```
+
+```{r}
+load('scalar-lm-simulation-boot_results.Rdata')
+apply(boot_results_ws[,3:4], 2,mean)
+mean(boot_results_ws[,1] < beta[3] & boot_results_ws[,2] > beta[3]) 
+boot_CI_ws = boot_results_ws[,3] + boot_results_ws[,4]%*%t(qnorm(c(0.025, 0.975)))
+mean(boot_CI_ws[,1] < beta[3] & boot_CI_ws[,2] > beta[3]) 
+```
