@@ -1,0 +1,283 @@
+---
+Applying to brain data pain within-subject analysis
+========================================================
+
+In this document I simulate functional data, code the two stage least square (2SLS) procedure for estimation, and 
+
+
+
+```{r}
+#library(reshape2, warn.conflicts = FALSE)
+#library(geepack, warn.conflicts = FALSE)
+library(ggplot2, warn.conflicts = FALSE)
+#library(GGally, warn.conflicts = FALSE)
+library(RColorBrewer, warn.conflicts = FALSE)
+library(gridExtra, warn.conflicts = FALSE)
+library(refund)
+library(splines)
+library(MASS) #ginv for Moore-Penrose generalized inverse
+
+mypalette   <- brewer.pal(9, "PRGn")
+qualpalette <- brewer.pal(8,"Set2")
+```
+
+Loading data
+=========================================
+  
+```{r load_data_BR6, cache=TRUE}
+datos <- read.table("C:\\Users\\Yenny\\Dropbox\\2012 Research\\Mediation_Research\\Data_experiment\\FDA_data3")
+                    
+# Selecting Right Anterior Insula (Brain Region 6)
+j <- 6
+BR <- datos[(1:943)+(j-1)*943,4:26]
+BR_tx <- datos[(1:943)+(j-1)*943,2]
+BR_subjects <- datos[(1:943)+(j-1)*943,1]
+    # Removing extreme outliers
+  BR_outliers <- which(abs(as.matrix(BR)) > 30 )
+    for(i in BR_outliers) if(floor(i/943)+1==24){
+            BR[i%%943,23] <- NA
+  		  }else{
+			  BR[i%%943,floor(i/943)+1] <- NA
+			  }
+
+# Build dataframe compatible with Vadim's lecture 8 code.
+BR6.refund <- with(datos[(1:943)+(6-1)*943,], {
+         data.frame(ID = V1, trt = V2, pain = V3)
+                  })
+
+BR6.refund$intensity <- as.matrix(BR)
+```
+
+The structure of the data is as follows:
+  
+* We have a stack of 21 matrices (943 by 26) each corresponding to a different brain region.
+* The first column is the subject identifier (1-20)
+* Second column is temperature (0,1)
+* Third column is pain rating (Continuous)
+* Columns 4-26 is the time series data M(t)
+* Each subject has 39 to 48 repetitions
+
+I look at the mediated effect of the treatment through brain region 6 (RAIns - Right Anterior Insula) on brain region 19 (dACC - dorsal Anterior Cingulate Cortex) 
+
+```{r}
+  source('~/GitHub/functional_mediation/sfs_Mediation.R')  
+  source('~/GitHub/functional_mediation/est_se_fgam.R')  
+```
+
+```{r}
+fbootstrap_ML = function(dta, index){
+  dta = dta[index,]
+  Y = dta[,grep("Y", names(dta))]
+  X = dta[,grep("X", names(dta))]
+  M = t(dta[,grep("M", names(dta))])
+  
+  result <- tryCatch(
+    {sfs_Mediation(X,Y,M,mediatorMethod="fosr2s", splinepars_fosr2s=list(nbasis = 15, norder = 4, basistype = "bspline"), outcomeMethod="fgam", splinepars_fgam=list(bs="ps",m=c(3,2)), plot=FALSE, boot=TRUE)
+     },
+    error=function(cond){
+      message(cond)
+      return(rep(NA,(2*nrow(M)^2+5*nrow(M))))
+    }
+    )
+  return(result)
+}
+```
+
+
+```{r}
+BR6.cc = BR6.refund[complete.cases(BR6.refund),]
+```
+
+```{r}
+within_person <- function(id){
+  BR6.ID = BR6.cc[BR6.cc$ID==id,]
+  X <- BR6.ID$trt
+  Y <- BR6.ID$pain
+  M <- BR6.ID$intensity
+  
+  out_boot <- sfs_Mediation(X,Y,t(M),mediatorMethod="fosr2s", splinepars_fosr2s=list(nbasis = 15, norder = 4, basistype = "bspline"), outcomeMethod="fgam", splinepars_fgam=list(bs="ps",m=c(3,2)), plot=TRUE, boot=TRUE, return_fits=FALSE)
+  return(out_boot)
+}
+```
+
+
+```{r}
+time1 = Sys.time()
+out_ws = sapply(unique(BR6.refund$ID), within_person)
+time2 = Sys.time()
+time2 - time1
+```
+
+```{r}
+save(out_ws, file="~/GitHub/wsd-mediation/Data_application/out_ws.Rdata")
+```
+
+
+For the outcome model, there is one smooth function to estimate. For the beta coefficient, we used 50 cubic P-splines with penalty in the second order derivative. 
+
+For the mediatior model, We used 15 cubic b-splines with penalty on the second derivative. (pen.order = norder - 2, and we specify nbasis = 15, norder = 4 in the sfs_Mediation call)
+
+# Bootstrap inference
+
+```{r eval=FALSE}
+# Bootstrap Inference
+N = length(unique(BR6.cc$ID))
+B=1000
+set.seed(39403)
+boot_sample = sapply(1:B, function(b) sample(1:N, replace=TRUE))
+boot_mean = sapply(1:B, function(b) apply(out_ws, 1, function(stat) mean(stat[boot_sample[,b]])))
+boot_results = apply(boot_mean, 1, function(stat) c(mean(stat), quantile(stat, c(0.025, 0.975))))
+
+save(boot_sample, boot_mean, boot_results, file="~/GitHub/wsd-mediation/data_application/boot_stats.Rdata")
+```
+
+```{r}
+load(file="~/GitHub/wsd-mediation/data_application/boot_stats.Rdata")
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+
+```{r}
+all_stats = t(boot_mean)
+
+Pall = 2*apply(cbind(colMeans(all_stats < 2*matrix(boot_results[1,], ncol=ncol(all_stats), nrow=nrow(all_stats), byrow = TRUE), na.rm = TRUE),colMeans(all_stats > 2*matrix(boot_results[1,], ncol=ncol(all_stats), nrow=nrow(all_stats), byrow = TRUE), na.rm = TRUE)),1, min)
+
+out = boot_results[1,]
+colnames(all_stats) <- names(Pall) <- names(out)
+  
+source('~/GitHub/functional_mediation/sff_vec2list.R')
+source('~/GitHub/functional_mediation/lplot.R')
+```
+
+```{r}
+par(mfrow=c(2,1))
+sff_vec2list(out, stats="d1function", plot=TRUE, returns = FALSE)
+sff_vec2list(Pall, stats="d1function", plot=TRUE, returns = FALSE)
+
+sff_vec2list(out, stats="afunction", plot=TRUE, returns = FALSE)
+sff_vec2list(Pall, stats="afunction", plot=TRUE, returns = FALSE)
+
+sff_vec2list(out, stats="bfunction", plot=TRUE, returns = FALSE)
+sff_vec2list(Pall, stats="bfunction", plot=TRUE, returns = FALSE)
+
+sff_vec2list(out, stats="abfunction", plot=TRUE, returns = FALSE)
+sff_vec2list(Pall, stats="abfunction", plot=TRUE, returns = FALSE)
+```
+
+```{r}
+  params = do.call(rbind, strsplit(colnames(all_stats), "_"))
+  
+  fun_all = all_stats
+
+all_dta = data.frame(ID=rep(1:nrow(fun_all), each=ncol(fun_all)), Parameter=params[,1], time = as.numeric(params[,2]), BOLD = c(t(fun_all)))
+```
+
+
+```{r}
+all_tbl = tbl_df(all_dta) 
+all_tbl$time <- all_tbl$time*2
+
+all_tbl$Parameter = mapvalues(all_tbl$Parameter, from = levels(all_tbl$Parameter), to = c("ab", "a(t)b(t)", "a(t)", "b(t)", "d1(t)","d2", "c"))
+
+
+
+mediator_tbl = filter(all_tbl,Parameter %in% c("d1(t)","a(t)"))
+mediator_tbl$Parameter = factor(mediator_tbl$Parameter, levels=c("d1(t)","a(t)"))
+
+outcome_tbl = filter(all_tbl,Parameter %in% c("d2", "c","b(t)"))
+outcome_tbl$Parameter = factor(outcome_tbl$Parameter, levels=c("d2", "c","b(t)"))
+
+indirect_tbl = filter(all_tbl,Parameter %in% c("ab", "a(s)b(s)"))
+indirect_tbl$Parameter = factor(indirect_tbl$Parameter, levels=c("ab", "a(s)b(s)"))
+
+ab_tbl = filter(all_tbl,Parameter %in% c("c", "ab"))
+ab_tbl$Parameter = factor(ab_tbl$Parameter, levels=c("c", "ab"))
+
+
+small_tbl = filter(all_tbl,Parameter %in% c("a(t)", "b(t)","a(t)b(t)"))
+small_tbl$Parameter = factor(small_tbl$Parameter, levels=c("a(t)", "b(t)","a(t)b(t)"))
+```
+
+```{r sfs_med_model, fig.height=3.2,fig.width=5,dpi=100, fig.path='C:/Users/Yenny/Documents/GitHub/wsd-mediation/Data_application/', include=FALSE}
+c = ggplot(data=mediator_tbl, aes(y = BOLD, x = time))
+c = c +facet_grid(. ~ Parameter , scale="fixed")
+
+c$labels = list(x = "Time in seconds", y = "Intensity", colour = "Parameter")
+c = c + geom_path(data = mediator_tbl, aes(x = time, y = BOLD, group = ID, colour = Parameter), size = 0.7, alpha = 0.05) + guides(colour=FALSE)
+c
+```
+
+```{r}
+params = do.call(rbind, strsplit(colnames(all_stats), "_"))
+
+fun_all = all_stats
+t0 = out
+
+all_dta = data.frame(ID=rep(1:nrow(fun_all), each=ncol(fun_all)), Parameter=params[,1], time = as.numeric(params[,2]), BOLD = c(t(fun_all)))
+
+t0_dta = data.frame(Parameter=params[,1], time = as.numeric(params[,2]), t0 = t0)
+
+
+all_tbl = tbl_df(all_dta) 
+all_tbl$time_f <- factor(all_tbl$time, levels=1:23)
+all_tbl$time <- all_tbl$time*2
+t0_dta$time <- t0_dta$time*2
+
+BI025_tbl = summarise(group_by(all_tbl, Parameter, time), BI025 = quantile(BOLD, probs=0.025, na.rm=TRUE))
+BI975_tbl = summarise(group_by(all_tbl, Parameter, time), BI975 = quantile(BOLD, probs=0.975, na.rm=TRUE))
+
+summ_tbl = merge(BI025_tbl,BI975_tbl)
+summ_tbl = merge(summ_tbl,t0_dta)
+
+summ_tbl = arrange(summ_tbl, Parameter, time)
+
+line_dta  = summ_tbl[!(summ_tbl$Parameter %in% c("ab", "g", "d2")), ]
+line_dta$Parameter = factor(line_dta$Parameter, levels=c("d1function", "afunction", "bfunction", "abfunction"), labels=c("Delta 1(t)","Alpha(t)", "Beta(t)", "Alpha(t)*Beta(t)"))
+point_dta = summ_tbl[(summ_tbl$Parameter %in% c("ab", "g", "d2")), ]
+point_dta$Parameter = factor(point_dta$Parameter, levels=c("ab", "g", "d2"), labels=c("Indirect Effect", "Direct Effect", "Delta 2"))
+```
+
+```{r sfs_Pain_lines1, fig.height=3.5,fig.width=8,dpi=200}
+c = ggplot(data=line_dta, aes(y = t0, x = time))
+c = c +facet_wrap( ~ Parameter , scale="free")
+
+c$labels = list(x = "Time in seconds", y = "Rating", colour = "Parameter")
+d = c +geom_hline(yintercept=0, size=1) + geom_ribbon(aes(ymin=BI025, ymax=BI975), fill="grey") + geom_path(data = line_dta, aes(x = time, y = t0,colour = Parameter),size = 1.7) + guides(colour=FALSE)
+d
+```
+
+
+```{r sfs_Pain_lines, fig.height=3.5,fig.width=8,dpi=200, fig.path='C:/Users/Yenny/Dropbox/sharelatex/Within-subject Mediation Designs/', include=FALSE}
+c = ggplot(data=line_dta, aes(y = t0, x = time))
+c = c +facet_wrap( ~ Parameter , scale="free")
+
+c$labels = list(x = "Time in seconds", y = "Rating", colour = "Parameter")
+d = c +geom_hline(yintercept=0, size=1) + geom_ribbon(aes(ymin=BI025, ymax=BI975), fill="grey") + geom_path(data = line_dta, aes(x = time, y = t0,colour = Parameter),size = 1.7) + guides(colour=FALSE)
+d
+```
+
+```{r sfs_Pain_points1, fig.height=3.5,fig.width=5,dpi=200}
+c = ggplot(point_dta, aes(x = Parameter, y = t0)) 
+c = c +facet_wrap( ~ Parameter , scale="free")
+
+c$labels = list(x = "Parameter", y = "Rating", colour = "Parameter")
+
+c = c+geom_hline(yintercept=0, size=0.5) + geom_pointrange(data=point_dta, mapping=aes(x=Parameter, y=t0, ymin=BI025, ymax=BI975), width=0.5, size=1, fill="white", shape=1) 
+# c + geom_point(size = 3) + geom_errorbar(aes(ymax = BI025, ymin = BI975))+guides(colour=FALSE)
+c
+```
+
+```{r sfs_Pain_points, fig.height=3.5,fig.width=5,dpi=200, fig.path='C:/Users/Yenny/Dropbox/sharelatex/Within-subject Mediation Designs/', include=FALSE}
+c = ggplot(point_dta, aes(x = Parameter, y = t0)) 
+c = c +facet_wrap( ~ Parameter , scale="free")
+
+c$labels = list(x = "Parameter", y = "Rating", colour = "Parameter")
+
+c = c+geom_hline(yintercept=0, size=0.5) + geom_pointrange(data=point_dta, mapping=aes(x=Parameter, y=t0, ymin=BI025, ymax=BI975), width=0.5, size=1, fill="white", shape=1) 
+# c + geom_point(size = 3) + geom_errorbar(aes(ymax = BI025, ymin = BI975))+guides(colour=FALSE)
+c
+```
+
